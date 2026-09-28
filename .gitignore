@@ -1,0 +1,8 @@
+# 個人のデータや秘密はこのリポジトリに入れない（private フォルダは repo の外に置いてある）
+*.txt
+!docs/*.txt
+.clasp.json
+.env
+node_modules/
+.DS_Store
+Thumbs.db

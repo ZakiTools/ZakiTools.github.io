@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="ja" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<!-- interactive-widget=resizes-content：キーボードが出た分だけ画面を縮める（下の入力欄が隠れないように） -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<!-- OS の文字サイズ設定をページに反映する（老眼になっても読めるように） -->
+<meta name="text-scale" content="scale">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#faf9f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1a1714" media="(prefers-color-scheme: dark)">
+<!-- CSP：このページは自分のファイルと Google Apps Script とだけ通信し、外から来たスクリプトは動かさない -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://script.google.com https://script.googleusercontent.com; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="description" content="『DIE WITH ZERO』の考え方で、死ぬまでの季節ごとに「いつ、何に注力するか」を置いていく自分用のアプリ">
+<title>タイムバケット</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+/* =====================================================================
+ * 見た目（共通デザイン v3 のトークン＋このアプリの部品）
+ *   色は CSS変数（:root）で決める。ダークは [data-theme="dark"] で上書き。
+ *   文字の大きさは rem（ルートの文字サイズ×倍率）なので、設定の文字サイズと OS の設定に追従する。
+ * ===================================================================== */
+:root{
+  --bg:#faf9f7; --surface:#ffffff; --surface-2:#f5efe9;
+  --text:#1f1b16; --text-muted:#6b6256; --text-faint:#736a5f;
+  --accent:#d97757; --accent-hover:#c15f3c; --accent-soft:#f6ebe4;
+  --border:#e8e1d8; --border-strong:#d8cfc3; --link:#c15f3c;
+  --ok:#3f9d6b; --warn:#caa23f; --danger:#c25b4a; --info:#5b86c2;
+  --font-sans:-apple-system,BlinkMacSystemFont,"Segoe UI","Yu Gothic UI","Hiragino Kaku Gothic ProN","Noto Sans JP",Meiryo,sans-serif;
+  --font-serif:Georgia,"Times New Roman","Hiragino Mincho ProN","Yu Mincho","Noto Serif JP",serif;
+  --fs-xs:.78rem; --fs-sm:.88rem; --fs-base:1rem; --fs-lg:1.15rem; --fs-xl:1.4rem; --fs-2xl:1.8rem;
+  --radius:8px; --radius-lg:14px;
+  --shadow:0 1px 2px rgba(0,0,0,.04),0 4px 12px rgba(0,0,0,.06);
+  --shadow-lg:0 10px 24px rgba(0,0,0,.14);
+  --fill-accent:#b85a38; --fill-accent-hover:#a14c2c; --on-accent:#ffffff;
+  --tabbar-h:64px;
+  --fs:1;
+}
+[data-theme="dark"]{
+  --bg:#1a1714; --surface:#241f1b; --surface-2:#2e2822;
+  --text:#ece5db; --text-muted:#b3a99c; --text-faint:#9a9084;
+  --danger:#e07a68;
+  --accent:#e89a7f; --accent-hover:#f0ad94; --accent-soft:#3a2b24;
+  --border:#3a332c; --border-strong:#4a4138; --link:#e89a7f;
+  --fill-accent:#e89a7f; --fill-accent-hover:#f0ad94; --on-accent:#1f1b16;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.25);
+  --shadow-lg:0 8px 30px rgba(0,0,0,.45);
+}
+:root{color-scheme:light}
+[data-theme="dark"]{color-scheme:dark}
+*{box-sizing:border-box}
+html{font-size:calc(100% * var(--fs)); -webkit-text-size-adjust:100%}
+body{margin:0; background:var(--bg); color:var(--text); font-family:var(--font-sans); font-size:var(--fs-base); line-height:1.7;
+  -webkit-font-smoothing:antialiased; -webkit-tap-highlight-color:transparent}
+h1,h2,h3{font-family:var(--font-serif); line-height:1.35; margin:0; font-weight:700; letter-spacing:.01em}
+button,input,textarea,select{font:inherit; color:inherit}
+:focus-visible{outline:3px solid var(--fill-accent); outline-offset:2px}
+::selection{background:var(--accent-soft)}
+.muted{color:var(--text-muted)} .faint{color:var(--text-faint)} .small{font-size:var(--fs-sm)} .xs{font-size:var(--fs-xs)}
+[hidden]{display:none !important}
+
+/* ---- 上のバー ---- */
+.appbar{position:sticky; top:0; z-index:20; display:flex; align-items:center; gap:.5rem;
+  padding:calc(env(safe-area-inset-top) + .5rem) 1rem .5rem; background:color-mix(in srgb,var(--bg) 88%,transparent);
+  backdrop-filter:blur(8px); border-bottom:1px solid var(--border)}
+.appbar h1{font-size:var(--fs-xl)}
+.appbar .spacer{flex:1}
+.env-badge{font-size:var(--fs-xs); padding:.1em .6em; border-radius:999px; background:var(--warn); color:#1f1b16; font-weight:700}
+.icon-btn{min-width:48px; min-height:48px; border:none; background:transparent; border-radius:50%; font-size:1.3rem; cursor:pointer; display:inline-flex; align-items:center; justify-content:center}
+.icon-btn:hover{background:var(--surface-2)}
+
+/* ---- 本文 ---- */
+main{max-width:560px; margin:0 auto; padding:.75rem 1rem calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 6rem)}
+.card{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); padding:1rem; margin:.75rem 0; box-shadow:var(--shadow)}
+.card.flat{box-shadow:none}
+.sec{margin:1.25rem 0 .5rem; display:flex; align-items:center; gap:.5rem}
+.sec h2{font-size:var(--fs-lg)}
+.sec .spacer{flex:1}
+.hero-age{font-size:var(--fs-2xl)}
+.word{margin:.25rem 0 .5rem; font-family:var(--font-serif); font-size:var(--fs-lg)}
+.progress{height:8px; background:var(--surface-2); border-radius:999px; overflow:hidden; margin:.4rem 0}
+.progress > span{display:block; height:100%; background:var(--accent); border-radius:999px}
+.line-link{display:flex; width:100%; align-items:center; gap:.4rem; background:none; border:none; padding:.5rem 0; text-align:left; cursor:pointer; color:var(--text-muted); min-height:44px}
+.line-link:hover{color:var(--accent)}
+
+/* ---- 項目の行 ---- */
+.list{display:flex; flex-direction:column; gap:.35rem}
+.irow{display:flex; align-items:flex-start; gap:.6rem; width:100%; min-height:48px; padding:.6rem .75rem; text-align:left;
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); cursor:pointer}
+.irow:hover{border-color:var(--accent)}
+.irow .sym{flex:none; width:1.3em; text-align:center; color:var(--accent); font-weight:700; line-height:1.7}
+.irow.theme .sym{color:var(--info)}
+.irow.done{background:var(--surface-2)}
+.irow.done .sym{color:var(--ok)}
+.irow .itext{flex:1; min-width:0; display:flex; flex-direction:column}
+.irow .ititle{font-weight:600; overflow-wrap:anywhere}
+.irow .imeta{font-size:var(--fs-sm); color:var(--text-muted)}
+.list-row{display:flex; gap:.4rem; align-items:stretch}
+.list-row > .irow{flex:1; min-width:0}
+.list-row > .iact{flex:none; display:flex; align-items:center}
+.row-actions{display:flex; gap:.4rem; flex-wrap:wrap; margin-top:.4rem}
+
+/* ---- ボタン・チップ ---- */
+.btn{display:inline-flex; align-items:center; justify-content:center; gap:.35em; min-height:44px; padding:.45rem .9rem; border-radius:var(--radius);
+  border:1px solid var(--border-strong); background:var(--surface); cursor:pointer; font-weight:600}
+.btn:hover{border-color:var(--accent); color:var(--accent)}
+.btn:active{transform:translateY(1px)}
+.btn[disabled]{opacity:.45; cursor:not-allowed; transform:none}
+.btn-accent{background:var(--fill-accent); border-color:var(--fill-accent); color:var(--on-accent)}
+.btn-accent:hover{background:var(--fill-accent-hover); border-color:var(--fill-accent-hover); color:var(--on-accent)}
+.btn-ghost{background:transparent; border-color:transparent; color:var(--fill-accent)}
+.btn-danger{color:var(--danger); border-color:color-mix(in srgb,var(--danger) 40%,var(--border))}
+.btn-block{width:100%}
+.btn-sm{min-height:48px; padding:.25rem .75rem; font-size:var(--fs-sm)}
+.chips{display:flex; flex-wrap:wrap; gap:.5rem}
+.chip{min-height:48px; padding:.35rem .9rem; border-radius:999px; border:1px solid var(--border-strong); background:var(--surface); cursor:pointer; font-size:var(--fs-sm)}
+.chip[aria-pressed="true"]{background:var(--fill-accent); border-color:var(--fill-accent); color:var(--on-accent)}
+.seg{display:inline-flex; flex-wrap:wrap; border:1px solid var(--border-strong); border-radius:999px}
+.seg button{border:none; background:var(--surface); padding:.35rem .95rem; min-height:48px; cursor:pointer; font-size:var(--fs-sm)}
+.seg button:first-child{border-radius:999px 0 0 999px} .seg button:last-child{border-radius:0 999px 999px 0}
+.seg button[aria-pressed="true"]{background:var(--fill-accent); color:var(--on-accent)}
+
+/* ---- 帯（お知らせ） ---- */
+.banner{border-radius:var(--radius-lg); padding:.8rem 1rem; margin:.75rem 0; border:1px solid var(--border); background:var(--surface-2)}
+.banner.info{background:color-mix(in srgb,var(--info) 10%,var(--surface)); border-color:color-mix(in srgb,var(--info) 30%,var(--border))}
+.banner.warn{background:color-mix(in srgb,var(--warn) 14%,var(--surface)); border-color:color-mix(in srgb,var(--warn) 40%,var(--border))}
+.banner.danger{background:color-mix(in srgb,var(--danger) 12%,var(--surface)); border-color:color-mix(in srgb,var(--danger) 40%,var(--border))}
+.banner.ok{background:color-mix(in srgb,var(--ok) 10%,var(--surface)); border-color:color-mix(in srgb,var(--ok) 30%,var(--border))}
+.banner p{margin:0 0 .4rem}
+
+/* ---- メーター（容量） ---- */
+.meter{margin:.6rem 0}
+.meter .mhead{display:flex; justify-content:space-between; gap:.5rem; font-size:var(--fs-sm)}
+.meter .bar{position:relative; height:12px; border-radius:999px; background:var(--surface-2); overflow:hidden; margin-top:.2rem}
+.meter .fill{position:absolute; left:0; top:0; bottom:0; background:var(--accent); border-radius:999px}
+.meter.near .fill{background:var(--warn)}
+.meter .over{position:absolute; top:0; bottom:0; right:0; background:repeating-linear-gradient(45deg,var(--warn) 0 6px,transparent 6px 11px)}
+.meter .note{font-size:var(--fs-xs); color:var(--text-muted); margin-top:.15rem}
+
+/* ---- バケツ（人生タブ） ---- */
+.bucket{scroll-margin-top:72px}
+.bucket.now{border-color:color-mix(in srgb,var(--accent) 50%,var(--border))}
+.bucket .bhead{display:flex; align-items:baseline; gap:.5rem; flex-wrap:wrap}
+.bucket .bhead h3{font-size:var(--fs-lg)}
+.bucket .bmeta{font-size:var(--fs-sm); color:var(--text-muted); margin:.15rem 0 .5rem}
+.now-badge{font-size:var(--fs-xs); background:var(--fill-accent); color:var(--on-accent); border-radius:999px; padding:.05em .55em; font-weight:700}
+.yrow{display:flex; gap:.6rem; align-items:flex-start; padding:.35rem 0; border-top:1px dashed var(--border)}
+.yrow:first-child{border-top:none}
+.yrow .yage{flex:none; width:2.6em; font-weight:700; color:var(--text-muted); font-variant-numeric:tabular-nums; padding-top:.6rem}
+.yrow .ybody{flex:1; min-width:0}
+.empty-note{color:var(--text-muted); font-size:var(--fs-sm); padding:.25rem 0}
+
+/* ---- チェックリスト ---- */
+.check{display:flex; gap:.6rem; padding:.6rem 0; border-top:1px solid var(--border)}
+.check:first-child{border-top:none}
+.check .mark{flex:none; width:1.6em; height:1.6em; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-weight:700; font-size:var(--fs-sm)}
+.check.ok .mark{background:color-mix(in srgb,var(--ok) 18%,var(--surface)); color:var(--ok)}
+.check.ng .mark{background:color-mix(in srgb,var(--warn) 22%,var(--surface)); color:#8a6a10}
+[data-theme="dark"] .check.ng .mark{color:var(--warn)}
+.check.na .mark{background:var(--surface-2); color:var(--text-faint)}
+.rule{font-size:var(--fs-xs); color:var(--text-faint)}
+
+/* ---- 本の意図チェック（指摘） ---- */
+.finding{border-left:4px solid var(--info); background:var(--surface-2); border-radius:0 var(--radius) var(--radius) 0; padding:.6rem .8rem; margin:.5rem 0}
+.finding.nudge{border-left-color:var(--accent)}
+.finding.warn{border-left-color:var(--warn)}
+.ok-line{color:var(--ok); font-weight:700}
+
+/* ---- 入力 ---- */
+.field{margin:.75rem 0}
+.check-line{display:flex; align-items:center; gap:.6rem; min-height:48px; font-size:var(--fs-sm); cursor:pointer}
+.check-line input{width:1.3rem; height:1.3rem; flex:none}
+.field > label, .field > .lbl{display:block; font-size:var(--fs-sm); color:var(--text-muted); margin-bottom:.25rem; font-weight:600}
+.input, textarea.input, select.input{width:100%; min-height:44px; padding:.5rem .7rem; border:1px solid var(--border-strong); border-radius:var(--radius); background:var(--surface)}
+textarea.input{min-height:5.5em; resize:vertical}
+.input:focus{border-color:var(--accent); outline:none; box-shadow:0 0 0 3px var(--accent-soft)}
+.stepper{display:flex; align-items:center; gap:.5rem}
+.stepper .val{min-width:4.5em; text-align:center; font-weight:700; font-size:var(--fs-lg)}
+details.more{border-top:1px solid var(--border); padding:.2rem 0}
+details.more > summary{cursor:pointer; min-height:44px; display:flex; align-items:center; gap:.5rem; font-weight:600; list-style:none}
+details.more > summary::-webkit-details-marker{display:none}
+details.more > summary::after{content:'▸'; margin-left:auto; color:var(--text-faint); transition:transform .15s}
+details.more[open] > summary::after{transform:rotate(90deg)}
+details.more > summary .sv{color:var(--text-muted); font-weight:400; font-size:var(--fs-sm)}
+
+/* ---- 表 ---- */
+.table-wrap{overflow-x:auto}
+table.t{border-collapse:collapse; width:100%; font-size:var(--fs-sm); font-variant-numeric:tabular-nums}
+table.t th, table.t td{padding:.4rem .5rem; border-bottom:1px solid var(--border); text-align:right; white-space:nowrap}
+table.t th:first-child, table.t td:first-child{text-align:left}
+table.t thead th{color:var(--text-muted); font-weight:600}
+
+/* ---- 下部タブ・＋ボタン・下の入力欄 ---- */
+.tabbar{position:fixed; left:0; right:0; bottom:0; z-index:30; display:flex; justify-content:center;
+  background:color-mix(in srgb,var(--surface) 94%,transparent); backdrop-filter:blur(8px); border-top:1px solid var(--border);
+  padding-bottom:env(safe-area-inset-bottom)}
+.tabbar .inner{display:flex; width:100%; max-width:560px}
+.tabbar button{flex:1; min-height:64px; padding:0 2px; border:none; background:none; cursor:pointer; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; color:var(--text-muted); font-size:var(--fs-xs)}
+.tabbar button svg{width:24px; height:24px}
+.tabbar button[aria-current="page"]{color:var(--fill-accent); font-weight:700}
+.fab{position:fixed; z-index:31; right:max(1rem, calc(50vw - 280px + 1rem)); bottom:calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 1rem);
+  width:56px; height:56px; border-radius:50%; border:none; background:var(--fill-accent); color:var(--on-accent); font-size:1.8rem; box-shadow:var(--shadow-lg); cursor:pointer}
+.fab:hover{background:var(--fill-accent-hover)}
+.inputbar{position:fixed; left:0; right:0; z-index:25; bottom:calc(var(--tabbar-h) + env(safe-area-inset-bottom)); display:flex; justify-content:center;
+  background:color-mix(in srgb,var(--bg) 94%,transparent); backdrop-filter:blur(8px); border-top:1px solid var(--border); padding:.5rem 1rem}
+.inputbar form{display:flex; gap:.4rem; width:100%; max-width:560px; align-items:center}
+.inputbar .input{flex:1}
+body.typing .tabbar, body.typing .fab{display:none}
+body.typing .inputbar{bottom:0; padding-bottom:calc(.5rem + env(safe-area-inset-bottom))}
+
+/* ---- シート（下から出る編集画面）---- */
+dialog.sheet{position:fixed; inset:auto 0 0 0; margin:0 auto; width:100%; max-width:560px; max-height:92dvh; padding:0; border:none;
+  border-radius:var(--radius-lg) var(--radius-lg) 0 0; background:var(--surface); color:var(--text); box-shadow:var(--shadow-lg);
+  overflow:auto; overscroll-behavior:contain}
+dialog.sheet.full{inset:0; height:100dvh; max-height:100dvh; border-radius:0}
+dialog.sheet::backdrop{background:rgba(20,15,10,.45)}
+.sheet-head{position:sticky; top:0; z-index:2; display:flex; align-items:center; gap:.5rem; padding:.5rem .5rem .5rem 1rem;
+  background:var(--surface); border-bottom:1px solid var(--border)}
+.sheet-head h2{flex:1; font-size:var(--fs-lg)}
+.sheet-body{padding:.75rem 1rem calc(1.25rem + env(safe-area-inset-bottom))}
+.sheet-foot{position:sticky; bottom:0; background:var(--surface); border-top:1px solid var(--border); padding:.6rem 1rem calc(.6rem + env(safe-area-inset-bottom)); display:flex; gap:.5rem; flex-wrap:wrap}
+.sheet-foot .btn{flex:1}
+.q{margin:1rem 0}
+.q .qt{font-weight:700; margin-bottom:.35rem}
+.q .qh{font-size:var(--fs-xs); color:var(--text-muted); margin-bottom:.4rem}
+.target{display:flex; align-items:center; gap:.6rem; width:100%; min-height:52px; padding:.55rem .75rem; margin:.3rem 0; text-align:left;
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); cursor:pointer}
+.target:hover{border-color:var(--accent)}
+.target .tl{font-weight:700; min-width:6.5em}
+.target .tm{flex:1; font-size:var(--fs-xs); color:var(--text-muted)}
+.target.outside{background:color-mix(in srgb,var(--warn) 10%,var(--surface))}
+.target.suggest{border-color:var(--accent); border-style:dashed}
+
+/* ---- トースト ---- */
+.toast{position:fixed; z-index:60; left:50%; transform:translateX(-50%) translateY(20px); bottom:calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 1rem);
+  max-width:min(92vw,520px); background:var(--text); color:var(--bg); padding:.7rem 1rem; border-radius:var(--radius-lg);
+  box-shadow:var(--shadow-lg); opacity:0; pointer-events:none; transition:opacity .2s, transform .2s; display:flex; gap:.75rem; align-items:center}
+.toast.show{opacity:1; transform:translateX(-50%) translateY(0); pointer-events:auto}
+.toast button{background:none; border:none; color:var(--accent-soft); font-weight:700; cursor:pointer; min-height:48px; text-decoration:underline}
+dialog.sheet .toast{bottom:calc(5.5rem + env(safe-area-inset-bottom))}
+body.has-inputbar .toast{bottom:calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 4.75rem)}
+body.has-inputbar.typing .toast{bottom:calc(4.75rem + env(safe-area-inset-bottom))}
+
+/* ---- 非常口（起動に失敗した時）---- */
+#rescue{max-width:560px; margin:2rem auto; padding:1rem}
+#rescue pre{white-space:pre-wrap; font-size:var(--fs-xs); color:var(--text-muted)}
+
+@media (prefers-reduced-motion: reduce){ *{transition:none !important; animation:none !important; scroll-behavior:auto !important} }
+@media print{ .appbar, .tabbar, .fab, .inputbar, .toast{display:none !important} main{padding-bottom:1rem} }
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="appbar">
+    <h1 id="screenTitle">タイムバケット</h1>
+    <span id="envBadge" class="env-badge" hidden>テスト環境</span>
+    <span class="spacer"></span>
+    <button id="settingsBtn" class="icon-btn" type="button" aria-label="設定">⚙</button>
+  </header>
+  <main id="main"></main>
+  <div id="inputbarHost"></div>
+  <button id="fab" class="fab" type="button" aria-label="思いついたことを書く">＋</button>
+  <nav class="tabbar" aria-label="画面の切り替え">
+    <div class="inner">
+      <button type="button" data-tab="now">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg>
+        <span>今年</span></button>
+      <button type="button" data-tab="life">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 4h14M5 9.3h14M5 14.6h14M5 20h14"/><circle cx="9" cy="9.3" r="1.6" fill="currentColor"/></svg>
+        <span>人生</span></button>
+      <button type="button" data-tab="inbox">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 13l2.5-8h13L21 13v6H3z"/><path d="M3 13h5l1.5 2.5h5L16 13h5"/></svg>
+        <span>候補箱</span></button>
+      <button type="button" data-tab="money">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 3h12M6 21h12M7 3c0 5 10 5 10 9s-10 4-10 9M17 3c0 5-10 5-10 9s10 4 10 9"/></svg>
+        <span>お金と時間</span></button>
+    </div>
+  </nav>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</div>
+
+<!-- 非常口：起動に失敗した時だけ出る（app.js とは独立して rescue.js が動かす） -->
+<div id="rescue" hidden>
+  <h1>起動できませんでした</h1>
+  <p>アプリの不具合で画面を作れませんでした。<strong>データはこのスマホの中に残っています。</strong>まず下のボタンでデータを書き出して、スマホの外（Googleドライブなど）に保存してください。</p>
+  <p><button id="rescueExport" class="btn btn-accent btn-block" type="button">データを書き出す（共有）</button></p>
+  <p><button id="rescueReload" class="btn btn-block" type="button">最新版を読み直す</button></p>
+  <pre id="rescueErr"></pre>
+</div>
+<noscript><p style="padding:1rem">このアプリは JavaScript を使います。ブラウザの設定で有効にしてください。</p></noscript>
+
+<script src="rescue.js"></script>
+<script src="core.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

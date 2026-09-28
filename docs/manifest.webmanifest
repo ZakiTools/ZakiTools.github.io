@@ -1,0 +1,23 @@
+{
+  "id": "/",
+  "name": "タイムバケット",
+  "short_name": "バケット",
+  "description": "『DIE WITH ZERO』の考え方で、死ぬまでの季節ごとに「いつ、何に注力するか」を置いていく自分用のアプリ",
+  "lang": "ja",
+  "start_url": "./?src=pwa",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#faf9f7",
+  "theme_color": "#d97757",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "思いついたことを書く", "short_name": "思いつき", "url": "./?do=add#inbox", "icons": [{ "src": "icon-192.png", "sizes": "192x192" }] },
+    { "name": "今年の注力", "short_name": "今年", "url": "./#now", "icons": [{ "src": "icon-192.png", "sizes": "192x192" }] },
+    { "name": "人生の季節", "short_name": "人生", "url": "./#life", "icons": [{ "src": "icon-192.png", "sizes": "192x192" }] }
+  ]
+}

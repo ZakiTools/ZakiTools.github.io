@@ -1,0 +1,3 @@
+# 改行は LF にそろえる（Windows で取り出しても、テストやアプリの動きが変わらないように）
+* text=auto eol=lf
+*.png binary

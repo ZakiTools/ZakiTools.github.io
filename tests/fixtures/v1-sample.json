@@ -1,0 +1,50 @@
+{
+ "_readme": "凍結サンプル（schemaVersion 1）。架空の人物。一度作ったら書き換えない。将来の版でも読めることを確かめる。",
+ "app": "dwz-timebucket",
+ "schemaVersion": 1,
+ "minWriter": 1,
+ "docId": "00000000-0000-4000-8000-000000000001",
+ "saveSeq": "00000000-0000-4000-8000-0000000000ff",
+ "createdAt": "2026-09-28T00:00:00.000Z",
+ "savedAt": "2026-10-01T09:00:00.000Z",
+ "profile": { "id": "profile", "birthDate": "1991-03-10", "planEndAge": 92, "bodyFreeUntilAge": 72, "hardBodyUntilAge": 48, "createdAt": "2026-09-28T00:00:00.000Z", "updatedAt": "2026-09-28T00:00:01.000Z" },
+ "settings": { "id": "settings", "bucketYears": 5, "leaveDaysPerYear": 18, "freeHoursPerWeek": 25, "createdAt": "1970-01-01T00:00:00.000Z", "updatedAt": "2026-09-28T00:00:02.000Z" },
+ "money": null,
+ "items": [
+  { "id": "10000000-0000-4000-8000-000000000001", "title": "オーロラを見に行く", "category": "旅", "status": "placed",
+    "when": { "fromAge": 36, "toAge": 36 }, "dwz": { "until": "60s", "why": ["body", "era"], "memory": "high", "reason": "", "at": "2026-09-28T00:00:03.000Z" },
+    "window": { "endAge": 69 }, "body": "hard", "leaveDays": 6, "cost": { "once": 400000 },
+    "createdAt": "2026-09-28T00:00:03.000Z", "updatedAt": "2026-09-28T00:00:03.000Z" },
+  { "id": "10000000-0000-4000-8000-000000000002", "title": "海外旅行", "status": "placed", "repeat": { "perYear": 1, "fromAge": 35, "toAge": 70 },
+    "when": { "fromAge": 35, "toAge": 70 }, "leaveDays": 5, "cost": { "once": 250000 },
+    "createdAt": "2026-09-28T00:00:04.000Z", "updatedAt": "2026-09-28T00:00:04.000Z" },
+  { "id": "10000000-0000-4000-8000-000000000003", "title": "台湾旅行", "status": "done", "parentId": "10000000-0000-4000-8000-000000000002",
+    "when": { "date": "2026-05-03", "endDate": "2026-05-06" },
+    "createdAt": "2026-09-28T00:00:05.000Z", "updatedAt": "2026-09-28T00:00:06.000Z" },
+  { "id": "10000000-0000-4000-8000-000000000004", "kind": "theme", "title": "走れる体づくり", "status": "placed", "when": { "fromAge": 35, "toAge": 36 },
+    "hoursPerWeek": 3, "goal": "10kmを走れる", "pillar": "body",
+    "createdAt": "2026-09-28T00:00:07.000Z", "updatedAt": "2026-09-28T00:00:07.000Z" },
+  { "id": "10000000-0000-4000-8000-000000000005", "title": "手放した経験", "status": "letgo", "letgo": { "date": "2026-09-28", "reason": "興味が変わった" },
+    "createdAt": "2026-09-28T00:00:08.000Z", "updatedAt": "2026-09-28T00:00:08.000Z" },
+  { "id": "10000000-0000-4000-8000-000000000006", "title": "消した経験", "status": "idea", "deletedAt": "2026-09-28T00:00:10.000Z",
+    "createdAt": "2026-09-28T00:00:09.000Z", "updatedAt": "2026-09-28T00:00:10.000Z" },
+  { "id": "10000000-0000-4000-8000-000000000007", "title": "未来の版が足した項目を持つ経験", "status": "idea", "futureField": { "keep": true },
+    "createdAt": "2026-09-28T00:00:11.000Z", "updatedAt": "2026-09-28T00:00:11.000Z" }
+ ],
+ "logs": [
+  { "id": "20000000-0000-4000-8000-000000000001", "itemId": "10000000-0000-4000-8000-000000000003", "itemTitle": "台湾旅行", "date": "2026-05-06",
+    "feel": 2, "note": "夜市で食べ歩いた", "later": [{ "date": "2026-09-28", "text": "今でもよく話す" }],
+    "createdAt": "2026-09-28T00:00:06.000Z", "updatedAt": "2026-09-28T00:00:06.000Z" }
+ ],
+ "people": [
+  { "id": "30000000-0000-4000-8000-000000000001", "name": "姉", "relation": "sibling", "birthYear": 1988,
+    "createdAt": "2026-09-28T00:00:12.000Z", "updatedAt": "2026-09-28T00:00:12.000Z" }
+ ],
+ "assets": [],
+ "yearPlans": [
+  { "id": "year-35", "age": 35, "word": "外へ出る年", "createdAt": "2026-09-28T00:00:13.000Z", "updatedAt": "2026-09-28T00:00:13.000Z" }
+ ],
+ "reviews": [],
+ "advice": [],
+ "futureArray": [{ "id": "f-1", "createdAt": "2026-09-28T00:00:14.000Z", "updatedAt": "2026-09-28T00:00:14.000Z" }]
+}
