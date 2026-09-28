@@ -19,6 +19,8 @@
 | `docs/manifest.webmanifest` | ホーム画面に入れた時の名前・アイコン・ショートカット |
 | `tests/` | 自動テスト（`node tests/run.js`）と実機の確認リスト（`MANUAL.md`） |
 | `tools/make-icons.js` | アイコンを作り直す（`node tools/make-icons.js`） |
+| `gas/` | 自分の Google への控え係（Google Apps Script のウェブアプリ）と Claude のレビュー |
+| `tools/gas.js` | GAS を作る・送る・公開する（clasp を使う。番号は `../private/gas-deploy.json` に置き、公開しない） |
 | `SCHEMA.md` | データの形と、形を変える時の規則 |
 | `CHANGELOG.md` | 変更の記録 |
 
@@ -37,6 +39,17 @@ node tests/run.js
 3. `CHANGELOG.md` に書く
 4. commit して push（GitHub Pages に反映される）
 5. スマホで「新しい版があります［更新する］」を押し、設定の版を確認する
+6. `gas/` を変えた時は `node tools/gas.js deploy`（ウェブアプリの住所は変わらない）
+
+## 控え係（GAS）
+
+```
+node tools/gas.js create   # 最初に1回（自分の Google に GAS のプロジェクトを作る）
+node tools/gas.js deploy   # コードを送ってウェブアプリを新しい版に
+```
+
+その後、GAS のエディタで `setup`（最初に1回）→ `sendSetupCode`（設定コードをメールで受け取る）を実行する。
+Claude の自動レビューを使う時は、スクリプト プロパティに `ANTHROPIC_API_KEY` を置く（コードやリポジトリには書かない）。
 
 ## 開発中に画面を見る
 

@@ -8,7 +8,7 @@
  *   VERSION は core.js の APP_VERSION と必ず一致させる（テストで確かめる）
  * ===================================================================== */
 'use strict';
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const CACHE = 'dwz-shell-' + VERSION;
 const ASSETS = [
   './', './index.html', './core.js', './app.js', './rescue.js',

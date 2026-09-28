@@ -24,7 +24,7 @@
    * 0. 定数
    * ===================================================================== */
   var APP_NAME = 'dwz-timebucket';     // データの「名札」。別アプリのJSONを取り込まないため
-  var APP_VERSION = '1.0.0';           // アプリの版（sw.js の VERSION と必ず一致させる）
+  var APP_VERSION = '1.1.0';           // アプリの版（sw.js の VERSION と必ず一致させる）
   var SCHEMA_VERSION = 1;              // データの「形」の版。意味が変わる時だけ +1
   var MIN_WRITER = 1;                  // このデータに書き込んでよいアプリの最低段階
   var WRITER_LEVEL = 1;                // このアプリ自身の段階（項目を足した版で +1）
@@ -322,6 +322,27 @@
   // 削除＝墓標にする（中身は残す。ゴミ箱から戻せる）
   function removeRec(rec, deviceId) { rec.deletedAt = nowIso(); touch(rec, deviceId); return rec; }
   function restoreRec(rec, deviceId) { rec.deletedAt = null; touch(rec, deviceId); return rec; }
+  // 「元に戻す」で消える記録（fromDoc にあって toDoc に無い物）を、墓標（消した印）として toDoc に残す。
+  // 記録の数が減らないので、クラウドの関所（shrink）に止められず、別の端末で生き返ることもない。
+  // undone の印が付いた物はゴミ箱に出さない（本人が消したのではなく、足したのを取り消しただけなので）
+  function tombstoneMissing(fromDoc, toDoc, deviceId) {
+    Object.keys(fromDoc || {}).forEach(function (k) {
+      var a = fromDoc[k];
+      if (!Array.isArray(a)) return;
+      var gone = a.filter(function (r) { return r && typeof r.id === 'string'; });
+      if (!gone.length) return;
+      if (!Array.isArray(toDoc[k])) toDoc[k] = [];
+      var have = {};
+      toDoc[k].forEach(function (r) { if (r && typeof r.id === 'string') have[r.id] = true; });
+      gone.forEach(function (r) {
+        if (have[r.id]) return;
+        var t = clone(r);
+        if (!t.deletedAt) { t.deletedAt = nowIso(); t.undone = true; touch(t, deviceId); }
+        toDoc[k].push(t);
+      });
+    });
+    return toDoc;
+  }
 
   // 年ごとの計画（ひとこと）。id は年齢から決まる（2台で作っても重複しない）
   function yearPlan(doc, A) { return byId(doc.yearPlans, 'year-' + A); }
@@ -465,7 +486,7 @@
     return y;
   }
   function normalizeGeneric(o) { var r = isObj(o) ? o : {}; return normalizeTimes(r); }
-  var NORMALIZERS = { items: normalizeItem, logs: normalizeLog, people: normalizePerson, yearPlans: normalizeYearPlan };
+  var NORMALIZERS = { items: normalizeItem, logs: normalizeLog, people: normalizePerson, yearPlans: normalizeYearPlan, advice: function (a) { return normalizeAdvice(a) || normalizeGeneric(a); } };
 
   function normalizeProfile(o) {
     var p = isObj(o) ? o : {};
@@ -541,7 +562,7 @@
     var sv = int(data.schemaVersion, 1), mw = int(data.minWriter, 1);
     var readOnly = sv > SCHEMA_VERSION || mw > WRITER_LEVEL;
     var doc = clone(data);
-    delete doc._readme; delete doc.exportedAt; delete doc.appVersion;   // 書き出し用の付け足しは捨てる
+    delete doc._readme; delete doc.exportedAt; delete doc.appVersion; delete doc._server;   // 書き出し用・クラウド用の付け足しは捨てる
     var migrated = false;
     if (!readOnly) {
       for (var v = sv; v < SCHEMA_VERSION; v++) {
@@ -1340,6 +1361,181 @@
     return n.toLocaleString('ja-JP') + '円';
   }
 
+  /* =====================================================================
+   * 10. 自分の Google への控え（v1.1）と Claude のレビュー — 画面に依存しない部分
+   * ===================================================================== */
+  // 設定コード：dwz1. ＋ {u:ウェブアプリの住所, k:秘密キー} を base64url にした1行
+  function b64urlToAscii(s) {
+    var b64 = s.replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+    if (typeof root.atob === 'function') return root.atob(b64);
+    return Buffer.from(b64, 'base64').toString('binary');
+  }
+  function isGasUrl(u) { return typeof u === 'string' && /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]{20,}\/exec$/.test(u); }
+  function parseSetupCode(text) {
+    var t = String(text || '').replace(/\s+/g, '');
+    var m = /dwz1\.([A-Za-z0-9_-]+)/.exec(t);
+    if (!m) return null;
+    var o;
+    try { o = JSON.parse(b64urlToAscii(m[1])); } catch (e) { return null; }
+    if (!o || !isGasUrl(o.u) || typeof o.k !== 'string' || o.k.length < 32) return null;
+    return { url: o.u, key: o.k };
+  }
+
+  // クラウドに送る文書（書き出しと同じ形。端末だけの情報は入らない）
+  function syncDoc(doc) { return compactDoc(doc); }
+
+  // 初めてつなぐ時の判断：クラウドが空なら送る／同じ人生データで端末の方が新しければ送る／それ以外は本人に聞く
+  function firstConnect(info, doc) {
+    if (!info || !info.serverRev) return 'push';
+    var localEmpty = !doc.profile.birthDate && live(doc.items).length === 0;
+    if (info.docId && info.docId !== doc.docId) return localEmpty ? 'restore' : 'ask-other-doc';
+    if (info.savedAt && isoNewer(info.savedAt, doc.savedAt)) return 'ask-cloud-newer';
+    return 'push';
+  }
+
+  // Claude のレビューに渡す材料。名前・生年月日・メモ・写真・思い出の一言は入れない。金額は許可した時だけ
+  function reviewPacket(doc, ctx, includeMoney) {
+    var items = live(doc.items);
+    var byIdMap = {};
+    items.forEach(function (i) { byIdMap[i.id] = i; });
+    var people = live(doc.people);
+    var rel = {};
+    people.forEach(function (p) { rel[p.id] = p.relation; });
+    var focusIds = yearFocus(doc, ctx).map(function (f) { return f.item.id; });
+    var logs = live(doc.logs);
+    function logCount(id) { return logs.filter(function (l) { return l.itemId === id; }).length; }
+    var yp = yearPlan(doc, ctx.A);
+    var cap = capacity(doc, ctx);
+    return {
+      app: 'dwz-timebucket-review', v: 1,
+      age: ctx.A, bucketYears: ctx.size, currentSeason: bucketLabel(ctx.bStart, ctx.size) + '（' + ctx.bStart + '〜' + ctx.bEnd + '歳）',
+      planEndAge: ctx.planEnd, bodyFreeUntilAge: ctx.bodyAge, hardBodyUntilAge: ctx.hardAge,
+      thisYear: {
+        word: yp ? yp.word : '', focus: focusIds,
+        capacity: { leaveDaysUsed: cap.leave.used, leaveDaysPerYear: cap.leave.cap, hoursPerWeekUsed: cap.hours.used, freeHoursPerWeek: cap.hours.cap,
+          costThisYear: includeMoney ? cap.cost.total : undefined }
+      },
+      items: items.map(function (i) {
+        var r = itemRange(i, ctx), w = windowInfo(i, ctx);
+        var o = {
+          id: i.id, kind: i.kind, title: i.title, status: i.status, category: i.category || undefined,
+          when: i.status === 'idea' ? '時期は未定' : whenLabel(i, ctx), ageRange: r || undefined,
+          window: w ? { endAge: w.end, state: w.state } : undefined, body: i.body,
+          dwz: i.dwz ? { until: i.dwz.until, why: i.dwz.why, memory: i.dwz.memory, reason: i.dwz.reason || undefined } : undefined,
+          repeat: i.repeat ? { perYear: i.repeat.perYear, fromAge: i.repeat.fromAge, toAge: repeatEnd(i, ctx), remaining: repeatRemaining(doc, i, ctx) } : undefined,
+          partOf: i.parentId && byIdMap[i.parentId] ? byIdMap[i.parentId].title : undefined,
+          with: (i.withIds || []).map(function (id) { return rel[id]; }).filter(Boolean),
+          supportedBy: (i.needsIds || []).map(function (id) { return byIdMap[id] ? byIdMap[id].title : null; }).filter(Boolean),
+          give: !!i.give || undefined, risk: !!i.risk || undefined, lastChance: i.lastChance || undefined,
+          goal: i.kind === 'theme' && i.goal ? i.goal : undefined,
+          memories: logCount(i.id) || undefined,
+          letgoReason: i.status === 'letgo' && i.letgo ? i.letgo.reason || undefined : undefined
+        };
+        if (includeMoney && i.cost && (i.cost.once != null || i.cost.perYear != null)) o.cost = { once: i.cost.once, perYear: i.cost.perYear };
+        return o;
+      }),
+      people: people.map(function (p) { return { relation: p.relation, ageNow: p.birthYear != null ? personAgeAt(p, ctx, ctx.A) : undefined }; }),
+      checklist: dwzChecklist(doc, ctx).map(function (c) { return { id: c.id, ok: c.ok, title: c.title, detail: c.detail, rule: c.rule }; }),
+      recentMemories: logs.filter(function (l) { return l.date && l.date >= addDays(ctx.today, -730); })
+        .map(function (l) { return { title: l.itemTitle, month: l.date.slice(0, 7), feel: l.feel }; })
+    };
+  }
+
+  // PC で見る「読む用」スプレッドシートの表（GAS はこれをそのまま書き写すだけ）
+  function sheetTables(doc, ctx) {
+    var items = live(doc.items);
+    var people = live(doc.people);
+    var pname = {};
+    people.forEach(function (p) { pname[p.id] = p.name; });
+    var tname = {};
+    items.forEach(function (i) { tname[i.id] = i.title; });
+    var STATUS = { idea: '候補', placed: '置いた', done: '思い出あり', letgo: '手放した' };
+    var BODY = { light: '軽い', normal: 'ふつう', hard: 'きつい' };
+    function whenOf(i) { return i.status === 'idea' ? '時期は未定' : whenLabel(i, ctx); }
+    function kindOf(i) { return i.kind === 'theme' ? '土台' : i.repeat ? '経験（回数）' : '経験'; }
+    function winOf(i) { var w = windowInfo(i, ctx); return w ? windowText(w) : ''; }
+    var focus = yearFocus(doc, ctx).map(function (f) {
+      var i = f.item;
+      return [kindOf(i), i.title, whenOf(i), i.leaveDays == null ? '' : i.leaveDays, i.hoursPerWeek == null ? '' : i.hoursPerWeek, i.cost && i.cost.once != null ? i.cost.once : ''];
+    });
+    var map = items.filter(function (i) { return i.status === 'placed' || i.status === 'done'; })
+      .map(function (i) { return { i: i, a: placedAge(i, ctx) }; })
+      .sort(function (x, y) { return (x.a == null ? 999 : x.a) - (y.a == null ? 999 : y.a); })
+      .map(function (x) {
+        var i = x.i, b = x.a == null ? null : bucketOf(x.a, ctx.size);
+        return [b ? bucketLabel(b.start, ctx.size) : '', x.a == null ? '' : x.a, kindOf(i), i.title, whenOf(i), winOf(i), STATUS[i.status]];
+      });
+    var all = items.map(function (i) {
+      var z = i.dwz || {};
+      return [kindOf(i), STATUS[i.status], i.title, whenOf(i), winOf(i), BODY[i.body],
+        z.until ? UNTIL_LABEL[z.until] : '', (z.why || []).map(function (k) { return WHY_LABEL[k]; }).join('・'), z.memory ? MEMORY_LABEL[z.memory] : '', z.reason || '',
+        i.leaveDays == null ? '' : i.leaveDays, i.hoursPerWeek == null ? '' : i.hoursPerWeek, i.cost && i.cost.once != null ? i.cost.once : '',
+        (i.withIds || []).map(function (id) { return pname[id]; }).filter(Boolean).join('・'), i.category, i.note, i.updatedAt.slice(0, 10)];
+    });
+    var FEEL = { 1: 'よかった', 2: 'とてもよかった', 3: '人生の宝' };
+    var logs = live(doc.logs).slice().sort(function (a, b) { return (a.date || '') < (b.date || '') ? 1 : -1; }).map(function (l) {
+      return [l.date || '', l.itemTitle || tname[l.itemId] || '', FEEL[l.feel] || '', l.note, (l.later || []).map(function (x) { return (x.date || '') + '：' + x.text; }).join(' / '), l.link];
+    });
+    var REL = { parent: '親', sibling: 'きょうだい', partner: 'パートナー', child: '子', friend: '友人', pet: 'ペット', other: 'その他' };
+    var ppl = people.map(function (p) { return [p.name, REL[p.relation] || '', p.birthYear == null ? '' : p.birthYear]; });
+    var checks = dwzChecklist(doc, ctx).map(function (c) { return [c.title, c.ok === true ? '✓' : c.ok === false ? '△' : '―', c.detail, c.rule]; });
+    var advice = live(doc.advice).slice().sort(function (a, b) { return a.at < b.at ? 1 : -1; }).map(function (a) {
+      return [String(a.at || '').slice(0, 10), a.source === 'claude-code' ? 'Claude Code' : 'Claude（自動）', a.overall || '',
+        (a.items || []).map(function (x) { return (tname[x.itemId] || '（項目）') + '：' + x.comment + (x.suggestion ? '（提案：' + x.suggestion + '）' : ''); }).join('\n')];
+    });
+    return { v: 1, sheets: [
+      { name: '今年', header: ['種類', '題名', '時期', '休み（日）', '週の時間', '費用（円）'], rows: focus },
+      { name: '人生の地図', header: ['季節', '年齢', '種類', '題名', '時期', '窓', '状態'], rows: map },
+      { name: '経験と土台', header: ['種類', '状態', '題名', '時期', '窓', '体力', '楽しめるのは', '今やる理由', '思い出', '今年に置いた理由', '休み', '週の時間', '費用', '誰と', 'カテゴリ', 'メモ', '更新'], rows: all },
+      { name: '思い出', header: ['日付', '題名', '手応え', '一言', '今思うこと', '写真'], rows: logs },
+      { name: '大切な人', header: ['呼び名', '関係', '生まれた年'], rows: ppl },
+      { name: '本の意図チェック', header: ['項目', '状態', '詳しく', '本'], rows: checks },
+      { name: 'Claudeのレビュー', header: ['日付', 'だれが', '全体への感想', '項目へのひとこと'], rows: advice }
+    ] };
+  }
+
+  // Claude のレビューを文書に取り込む（同じ id は二度入れない）
+  function normalizeAdvice(a) {
+    if (!isObj(a)) return null;
+    var at = normIso(a.at || a.createdAt);
+    var out = Object.assign({}, a, {
+      id: typeof a.id === 'string' && a.id ? a.id : 'adv-' + at,
+      at: at, source: oneOf(a.source, ['api', 'claude-code'], 'api'),
+      overall: str(a.overall, '').slice(0, 4000),
+      praise: Array.isArray(a.praise) ? a.praise.filter(function (x) { return typeof x === 'string'; }).slice(0, 10) : [],
+      items: Array.isArray(a.items) ? a.items.filter(function (x) { return isObj(x) && typeof x.itemId === 'string'; }).slice(0, 20).map(function (x) {
+        return { itemId: x.itemId, comment: str(x.comment, ''), suggestion: str(x.suggestion, ''), rule: str(x.rule, '') };
+      }) : [],
+      questions: Array.isArray(a.questions) ? a.questions.filter(function (x) { return typeof x === 'string'; }).slice(0, 10) : []
+    });
+    out.createdAt = normIso(a.createdAt || at);
+    out.updatedAt = normIso(a.updatedAt || at);
+    out.deletedAt = a.deletedAt ? normIso(a.deletedAt) : null;
+    return out;
+  }
+  function addAdvice(doc, a) {
+    var n = normalizeAdvice(a);
+    if (!n) return false;
+    if (!Array.isArray(doc.advice)) doc.advice = [];
+    if (byId(doc.advice, n.id)) return false;
+    doc.advice.push(n);
+    return true;
+  }
+  function latestAdvice(doc) {
+    var list = live(doc.advice).slice().sort(function (a, b) { return a.at < b.at ? 1 : -1; });
+    return list[0] || null;
+  }
+  // その項目への、いちばん新しいひとこと
+  function adviceForItem(doc, itemId) {
+    var list = live(doc.advice).slice().sort(function (a, b) { return a.at < b.at ? 1 : -1; });
+    for (var i = 0; i < list.length; i++) {
+      var hit = (list[i].items || []).filter(function (x) { return x.itemId === itemId; })[0];
+      if (hit) return { advice: list[i], entry: hit };
+    }
+    return null;
+  }
+
   /* ---------- 外へ出す ---------- */
   var DWZ = {
     APP_NAME: APP_NAME, APP_VERSION: APP_VERSION, SCHEMA_VERSION: SCHEMA_VERSION, MIN_WRITER: MIN_WRITER, WRITER_LEVEL: WRITER_LEVEL,
@@ -1353,7 +1549,7 @@
     ageYear: ageYear, todayYmd: todayYmd, endOfMonth: endOfMonth, jpDate: jpDate, shortDate: shortDate,
     // 記録
     newDoc: newDoc, newItem: newItem, newLog: newLog, newPerson: newPerson, touch: touch, live: live, byId: byId,
-    removeRec: removeRec, restoreRec: restoreRec, yearPlan: yearPlan, ensureYearPlan: ensureYearPlan,
+    removeRec: removeRec, restoreRec: restoreRec, tombstoneMissing: tombstoneMissing, yearPlan: yearPlan, ensureYearPlan: ensureYearPlan,
     ITEM_DEFAULTS: ITEM_DEFAULTS,
     // 関所・移行・合体
     ingest: ingest, normalizeItem: normalizeItem, MIGRATIONS: MIGRATIONS, mergeDocs: mergeDocs,
@@ -1367,7 +1563,11 @@
     isAnytime: isAnytime, dwzCheck: dwzCheck, applyDwzAnswers: applyDwzAnswers, hasDwz: hasDwz, dwzChecklist: dwzChecklist,
     // 保存・書き出し
     compactDoc: compactDoc, serialize: serialize, createStore: createStore, exportText: exportText, exportFileName: exportFileName,
-    importDrafts: importDrafts, hintExtras: hintExtras, applyHintExtras: applyHintExtras
+    importDrafts: importDrafts, hintExtras: hintExtras, applyHintExtras: applyHintExtras,
+    // 同期・レビュー（v1.1）
+    isGasUrl: isGasUrl, parseSetupCode: parseSetupCode, syncDoc: syncDoc, firstConnect: firstConnect,
+    reviewPacket: reviewPacket, sheetTables: sheetTables, normalizeAdvice: normalizeAdvice, addAdvice: addAdvice,
+    latestAdvice: latestAdvice, adviceForItem: adviceForItem
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = DWZ;

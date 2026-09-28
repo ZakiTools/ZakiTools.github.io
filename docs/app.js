@@ -41,7 +41,7 @@
 
   var saveFailed = false;
   var store = D.createStore(storage, {
-    onSaved: function (r) { if (r && r.ok) { if (saveFailed) { saveFailed = false; renderAll(); } } },
+    onSaved: function (r) { if (r && r.ok) { if (saveFailed) { saveFailed = false; renderAll(); } markDirty(); } },
     onError: function () { saveFailed = true; renderAll(); },
     onReadOnly: function () { readOnly = true; renderAll(); },
     onMerged: function () { recompute(); renderAll(); refreshSheets(); }
@@ -270,6 +270,8 @@
     if (!lastUndo) return;
     var r = D.ingest(lastUndo.before);
     if (!r.ok) return;
+    // 取り消しで消える記録は墓標として残す（同じ人生データの時だけ。クラウドの関所に止められないように）
+    if (r.doc.docId === doc.docId) D.tombstoneMissing(doc, r.doc, device.deviceId);
     doc = r.doc;
     lastUndo = null;
     afterChange();
@@ -298,6 +300,7 @@
     if (!doc) return;
     document.getElementById('screenTitle').textContent = TAB_TITLES[ui.tab];
     document.getElementById('envBadge').hidden = !IS_TEST;
+    renderDot();
     Array.prototype.forEach.call(document.querySelectorAll('.tabbar [data-tab]'), function (b) {
       if (b.getAttribute('data-tab') === ui.tab) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
     });
@@ -376,6 +379,8 @@
     ]));
     var banner = renderBanner();
     if (banner) out.push(banner);
+    var ac = adviceCard();
+    if (ac) out.push(ac);
     if (rolledNotice) {
       out.push(h('button', { type: 'button', class: 'line-link small', on: { click: function () { rolledNotice = false; setTab('life'); } } },
         '前の年に置いていた経験を「' + D.bucketLabel(ctx.bStart, ctx.size) + 'のどこかで」に戻しました ▸'));
@@ -466,6 +471,8 @@
     if (!store.isReady()) return h('div', { class: 'banner danger' }, [h('p', { text: 'まだ保存していません。保存データが壊れていたので、戻し方を選んでください。' }), btn('選ぶ', openRepair, 'btn-sm btn-accent')]);
     if (saveFailed) return h('div', { class: 'banner danger' }, [h('p', { text: '保存できませんでした（空き容量など）。念のため今すぐ書き出してください。' }), btn('書き出す', function () { exportNow('share'); }, 'btn-sm btn-accent')]);
     if (updateReady) return h('div', { class: 'banner info' }, [h('p', { text: '新しい版があります。' }), btn('更新する', applyUpdate, 'btn-sm btn-accent')]);
+    var sb = syncBanner();
+    if (sb) return sb;
     var due = D.dueMemories(doc, ctx);
     if (due.length) {
       var it = due[0];
@@ -475,6 +482,8 @@
           btn('手放す', function () { openLetgoSheet(it.id); }, 'btn-sm')])]);
     }
     var hasData = liveItems().length > 0;
+    // 自動の控えが7日以内に取れていれば、手動の書き出しの帯は出さない
+    if (syncOn() && device.sync.lastOkAt && Date.now() - Date.parse(device.sync.lastOkAt) < 7 * 86400000) return null;
     var last = device.lastExportAt ? Date.parse(device.lastExportAt) : 0;
     var days = last ? Math.floor((Date.now() - last) / 86400000) : null;
     if (hasData && (days == null || days >= 7)) {
@@ -999,6 +1008,10 @@
       var status = it.status === 'idea' ? '候補（時期は未定）' : it.status === 'letgo' ? '手放した' + (it.letgo && it.letgo.reason ? '：' + it.letgo.reason : '') : D.whenLabel(it, ctx) + (it.status === 'done' ? '・思い出あり' : '');
       body.push(h('p', { class: 'small muted', text: status }));
       if (it.origin === 'draft' && hintText(it)) body.push(h('p', { class: 'xs muted', text: 'Claudeの下書き：' + hintText(it) }));
+      var af = D.adviceForItem(doc, it.id);
+      if (af) body.push(h('div', { class: 'finding info' }, [h('div', { class: 'xs muted', text: 'Claude のひとこと（' + adviceDate(af.advice) + '）' }), h('div', { text: af.entry.comment }),
+        af.entry.suggestion ? h('div', { class: 'small', text: '提案：' + af.entry.suggestion }) : null,
+        af.entry.rule ? h('div', { class: 'rule', text: ruleLabel(af.entry.rule) }) : null]));
       // 下書きの「休み・時間・費用」の案は、置いた後にだけ出す（書き出す時はお金を考えない、という本の手順）
       if (it.status === 'placed' && it.hint) {
         var hx = D.hintExtras(it), hparts = [];
@@ -1265,8 +1278,8 @@
   function openTrash() {
     openSheet({ title: 'ゴミ箱', build: function () {
       var body = [];
-      var items = (doc.items || []).filter(function (i) { return i.deletedAt; });
-      var people = (doc.people || []).filter(function (p) { return p.deletedAt; });
+      var items = (doc.items || []).filter(function (i) { return i.deletedAt && !i.undone; });   // 「元に戻す」で取り消した物は出さない
+      var people = (doc.people || []).filter(function (p) { return p.deletedAt && !p.undone; });
       if (!items.length && !people.length) body.push(h('p', { class: 'small muted', text: 'ゴミ箱は空です。' }));
       items.forEach(function (i) { body.push(h('div', { class: 'row-actions', style: { 'align-items': 'center' } }, [h('span', { style: { flex: '1' }, text: i.title || '（題名なし）' }),
         btn('戻す', function () { commit('戻しました', function (d) { D.restoreRec(D.byId(d.items, i.id), device.deviceId); }); }, 'btn-sm')])); });
@@ -1312,7 +1325,7 @@
       '最後に保存：' + (d.savedAt ? d.savedAt.slice(0, 16).replace('T', ' ') + '（UTC）' : '不明')];
   }
   // 取り込み（置き換え）。直前を控えて、元に戻すこともできる
-  function importReplace(text, fromWelcome) {
+  function importReplace(text, fromWelcome, hooks) {
     var r = D.ingest(text);
     if (!r.ok) { toast(r.reason === 'app' ? 'タイムバケットのデータではないようです' : '読み込めませんでした（中身が壊れています）'); return; }
     if (r.readOnly) { toast('新しい版のアプリで作られたデータです。アプリを更新してから取り込んでください'); return; }
@@ -1330,6 +1343,7 @@
       store.setReady(true);
       afterChange();
       store.flush();
+      if (hooks && hooks.onApplied) hooks.onApplied();
       if (fromWelcome) openSheets.slice().forEach(function (s) { s.close(); });
       toast('取り込みました', { undo: true });
     });
@@ -1349,7 +1363,7 @@
   }
 
   function openSettings() {
-    openSheet({ title: '設定', full: true, build: function (api) {
+    var settingsSheet = openSheet({ title: '設定', full: true, build: function (api) {
       var p = doc.profile, s = doc.settings;
       var body = [];
       function stepper(label, value, min, max, onSet, hint) {
@@ -1389,6 +1403,7 @@
       });
       body.push(btn('＋ 大切な人を追加', function () { openPersonSheet(null); }, 'btn-sm', { style: { 'margin-top': '.4rem' } }));
 
+      body.push(syncSettingsSection(api));
       body.push(h('h3', { text: 'データを守る', style: { 'margin-top': '1.5rem' } }));
       var persistEl = h('p', { class: 'small', text: '保存の状態：確認中…' });
       if (navigator.storage && navigator.storage.persisted) {
@@ -1396,7 +1411,7 @@
       } else persistEl.textContent = '保存の状態：このブラウザでは確認できません';
       body.push(persistEl);
       body.push(h('p', { class: 'small muted', text: '使用量：約' + Math.max(1, Math.round(store.usage() / 1024)) + 'KB・データの版 ' + doc.schemaVersion + '・アプリ v' + D.APP_VERSION + '・前回の書き出し ' + exportAgoText() }));
-      body.push(h('p', { class: 'xs muted', text: 'データはこのスマホの中にあります。機種変更やブラウザのデータ削除では消えるので、書き出した .txt をGoogleドライブなどに保存してください（クラウドへの自動の控えは次の版で入ります）。' }));
+      body.push(h('p', { class: 'xs muted', text: syncOn() ? 'データはこのスマホの中にあり、変更のたびに自分の Google にも控えを取っています。念のため、年に1回は書き出した .txt も別の場所に残してください。' : 'データはこのスマホの中にあります。機種変更やブラウザのデータ削除では消えるので、上の「同期」を設定するか、書き出した .txt をGoogleドライブなどに保存してください。' }));
       body.push(h('div', { class: 'list' }, [
         btn('書き出す（共有 → Googleドライブなど）', function () { exportNow('share'); }, 'btn-accent btn-block'),
         btn('ファイルとして保存', function () { exportNow('download'); }, 'btn-block'),
@@ -1413,6 +1428,7 @@
         h('ol', { class: 'small' }, Object.keys(D.RULES).map(function (k) { return h('li', { text: D.RULES[k] }); }))]));
       return body;
     } });
+    settingsSheet.syncView = true;     // 同期の状態が変わった時に描き直す
   }
   function openDraftImport() {
     openSheet({ title: 'Claudeの下書きを取り込む', build: function (api) {
@@ -1470,7 +1486,13 @@
           h('li', { text: '「ゼロで死ぬ」は浪費ではありません。生活と長生きへの備えを確保したうえで、計画的に使い切る考え方です。' }),
           h('li', { text: 'データはこのスマホの中に保存されます。ときどき書き出して、スマホの外にも控えを残します。' })
         ]));
-        foot = [btn('以前のデータを復元する', function () { pickFile(function (t) { importReplace(t, true); }); }), btn('はじめて使う', next, 'btn-accent')];
+        foot = [btn('以前のデータを復元する', function () {
+          openSheet({ title: '以前のデータを復元する', build: function (a2) {
+            return [h('p', { class: 'small', text: 'どこから戻しますか？' }), h('div', { class: 'list' }, [
+              btn('クラウドから（設定コードを貼る）', function () { a2.close(); askSetupCode('restore'); }, 'btn-accent btn-block'),
+              btn('書き出したファイルから', function () { a2.close(); pickFile(function (t) { importReplace(t, true); }); }, 'btn-block')])];
+          } });
+        }), btn('はじめて使う', next, 'btn-accent')];
       } else if (step === 1) {
         body.push(field('生年月日', h('input', { class: 'input', type: 'date', value: w.birth, max: today(),
           on: { input: function (e) { w.birth = e.target.value; }, change: function (e) { w.birth = e.target.value; api.refresh(); } } })));
@@ -1516,6 +1538,380 @@
       return { body: body, foot: foot };
     } });
     return sheet;
+  }
+
+  /* =====================================================================
+   * 10. 自分の Google への控え（同期）と Claude のレビュー（v1.1）
+   *   片方向：スマホ → クラウド。クラウドから戻すのは、本人が選んだ「復元」の時だけ。
+   *   秘密キー（設定コード）はこの端末の情報（dwz-device）にだけ置き、書き出しには入れない。
+   * ===================================================================== */
+  var syncTimer = null, syncBusy = false, lastPingAt = 0;
+  var BLOCKING = ['auth', 'other_device', 'doc_mismatch', 'shrink', 'client_old', 'clock_future', 'store_trashed', 'too_large'];
+  var ERROR_TEXT = {
+    offline: '電波がありません（つながったら自動で送ります）', auth: '設定コードが違うようです（設定 → 同期 で貼り直してください）',
+    other_device: 'クラウドには、別の端末が保存した内容があります', doc_mismatch: 'クラウドには、別の人生データがあります',
+    shrink: 'クラウドより記録が少ない内容で上書きしそうだったので、止めました', client_old: 'アプリの更新が必要です',
+    clock_future: 'この端末の時計が大きく進んでいるようです', store_trashed: 'Google ドライブの控えのフォルダがゴミ箱に入っています',
+    too_large: 'データが大きすぎて送れませんでした', busy: 'クラウドが混み合っています（少し後で自動で送ります）',
+    server: 'クラウドで問題が起きました（少し後で自動で送ります）', quota: 'Google の保存容量がいっぱいのようです',
+    bad_response: 'クラウドから思わぬ返事が来ました（GAS の設定を確かめてください）', bad_request: '送った内容を受け付けてもらえませんでした',
+    not_found: '見つかりませんでした', no_api_key: 'Claude の API キーがまだ設定されていません（セットアップ手順.html の v1.1 の節）',
+    bad_api_key: 'Claude の API キーが正しくないようです', rate_limited: 'Claude が混み合っています。少し後でもう一度',
+    api_error: 'Claude の呼び出しでエラーが起きました', network: 'Claude につながりませんでした', refusal: 'Claude がこの内容のレビューを控えました',
+    max_tokens: 'レビューが長すぎて途中で切れました', bad_json: 'Claude の返事を読み取れませんでした', bad_shape: 'Claude の返事の形が違いました',
+    no_packet: 'まだ材料が届いていません（少し後でもう一度）', unchanged: '前回のレビューから中身が変わっていません'
+  };
+  function errText(code) { return ERROR_TEXT[code] || ('うまくいきませんでした（' + code + '）'); }
+  function syncOn() { var s = device.sync; return !!(s && s.enabled && s.url && s.key); }
+  function deviceLabel() {
+    if (device.deviceName) return device.deviceName;
+    var ua = navigator.userAgent || '';
+    return /Android/.test(ua) ? 'Android' : /iPhone|iPad/.test(ua) ? 'iPhone' : /Windows/.test(ua) ? 'Windows' : /Mac/.test(ua) ? 'Mac' : 'この端末';
+  }
+  // GAS を呼ぶ。text/plain で送る（ブラウザの事前確認が要らない「単純な」送り方）
+  function callGas(op, extra, opts) {
+    opts = opts || {};
+    var s = device.sync;
+    var body = Object.assign({ v: 1, op: op, key: s.key, deviceId: device.deviceId, deviceName: deviceLabel(), appVersion: D.APP_VERSION, writer: D.WRITER_LEVEL }, extra || {});
+    var ctrl = window.AbortController ? new AbortController() : null;
+    var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, opts.timeoutMs || 60000) : null;
+    return fetch(s.url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body), redirect: 'follow',
+      keepalive: !!opts.keepalive, signal: ctrl ? ctrl.signal : undefined })
+      .then(function (r) { return r.text(); })
+      .then(function (t) { try { var j = JSON.parse(t); return j && typeof j === 'object' ? j : { ok: false, error: 'bad_response' }; } catch (e) { return { ok: false, error: 'bad_response' }; } })
+      .catch(function () { return { ok: false, error: 'offline' }; })
+      .then(function (j) { if (timer) clearTimeout(timer); return j; });
+  }
+  function syncMeta() { return doc ? { reviewFrequency: doc.settings.reviewFrequency, reviewIncludeMoney: !!doc.settings.reviewIncludeMoney } : null; }
+  function markDirty() {
+    if (!syncOn()) return;
+    device.sync.dirty = true;
+    saveDevice();
+    schedulePush(3000);
+    renderDot();
+  }
+  function schedulePush(ms) { clearTimeout(syncTimer); syncTimer = setTimeout(function () { pushNow(); }, ms); }
+  function pushNow(opts) {
+    opts = opts || {};
+    var s = device.sync;
+    if (!syncOn() || syncBusy || readOnly || !store.isReady()) return Promise.resolve(null);
+    var force = opts.force || s.forceNext || null;
+    if (s.blocked && !opts.force) return Promise.resolve(null);
+    if (!s.dirty && !opts.manual && !force) return Promise.resolve(null);
+    store.flush();
+    var payload = {
+      baseRev: s.baseRev == null ? 0 : s.baseRev, doc: D.syncDoc(doc),
+      tables: ctx ? D.sheetTables(doc, ctx) : null, packet: ctx ? D.reviewPacket(doc, ctx, doc.settings.reviewIncludeMoney) : null,
+      meta: syncMeta(),
+      reason: opts.manual ? 'manual' : 'auto', force: force
+    };
+    var sentSeq = doc.saveSeq;
+    // 画面を閉じる瞬間の送信（keepalive）は 64KB まで。日本語は1文字3バイトなので、バイト数で測る
+    var json = JSON.stringify(payload);
+    var small = (window.TextEncoder ? new TextEncoder().encode(json).length : json.length * 3) < 60000;
+    syncBusy = true; renderDot();
+    return callGas('push', payload, { keepalive: !!opts.keepalive && small }).then(function (res) {
+      syncBusy = false;
+      if (res.ok) {
+        s.baseRev = res.serverRev; s.lastOkAt = D.nowIso(); s.failCount = 0; s.lastError = null; s.blocked = null; s.forceNext = null;
+        if (doc.saveSeq === sentSeq) s.dirty = false; else schedulePush(3000);
+      } else if (BLOCKING.indexOf(res.error) >= 0) {
+        s.forceNext = null;
+        s.blocked = { error: res.error, at: D.nowIso(), info: { lastPushDeviceName: res.lastPushDeviceName || null, savedAt: res.savedAt || null, collections: res.collections || null } };
+        s.lastError = res.error;
+      } else {
+        s.failCount = (s.failCount || 0) + 1; s.lastError = res.error; s.lastErrorAt = D.nowIso();
+        if (res.error !== 'offline') s.forceNext = null;   // クラウドに届いた失敗なら、次は普通の関所を通す
+        if (s.failCount <= 3) schedulePush([60000, 300000, 1800000][s.failCount - 1]);
+      }
+      saveDevice(); renderAll(); refreshSyncViews();
+      return res;
+    });
+  }
+  // 同期の状態を表示しているシート（設定）だけを描き直す。入力欄に文字を打っている間は描き直さない
+  function refreshSyncViews() {
+    var a = document.activeElement;
+    openSheets.forEach(function (sh) {
+      if (!sh.syncView) return;
+      if (a && sh.dlg.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+      sh.refresh();
+    });
+  }
+  function pingNow(force) {
+    if (!syncOn()) return Promise.resolve(null);
+    if (!force && Date.now() - lastPingAt < 60000) return Promise.resolve(null);
+    var s = device.sync;
+    if (!force && s.blocked && s.blocked.error === 'auth') return Promise.resolve(null);   // キーが違う間は、自動では呼ばない
+    lastPingAt = Date.now();
+    return callGas('ping', { meta: syncMeta() }).then(function (res) {
+      if (!res.ok) {
+        if (res.error === 'auth') { s.blocked = { error: 'auth', at: D.nowIso(), info: {} }; saveDevice(); renderAll(); }
+        return res;
+      }
+      s.server = { rev: res.serverRev, docId: res.docId, savedAt: res.savedAt, lastPushDeviceName: res.lastPushDeviceName, sheetUrl: res.sheetUrl,
+        folderUrl: res.folderUrl, review: res.review, trashed: res.trashed, at: D.nowIso() };
+      if (res.trashed) s.blocked = { error: 'store_trashed', at: D.nowIso(), info: {} };
+      else if (s.blocked && (s.blocked.error === 'store_trashed' || s.blocked.error === 'auth' ||
+        (s.blocked.error === 'client_old' && D.WRITER_LEVEL >= (res.minWriter || 1)))) s.blocked = null;   // 直っていたら止めを解く
+      if (s.forceNext && res.serverRev !== s.baseRev) s.forceNext = null;   // 戻した後に別の端末が送っていたら、上書きの許可は捨てる
+      saveDevice(); renderDot();
+      // 新着のレビューは、クラウドとの関係（baseRev）が決まってから取り込む（つなぐ途中の空の文書に書かないように）
+      if (s.baseRev != null && !readOnly && store.isReady() && res.advice && res.advice.name && res.advice.name !== s.lastAdvice) fetchAdvice(res.advice.name);
+      if (s.dirty) pushNow();
+      return res;
+    });
+  }
+  function fetchAdvice(name) {
+    return callGas('get', { name: name }).then(function (res) {
+      if (!res.ok || !res.doc) return;
+      takeAdvice(res.doc, name, true);
+    });
+  }
+  function takeAdvice(adv, name, announce) {
+    var added = false;
+    commit(null, function (d) { added = D.addAdvice(d, adv); return added ? undefined : false; }, { undo: false, noRefresh: true });
+    if (name && adv && adv.id && D.byId(doc.advice, adv.id)) { device.sync.lastAdvice = name; saveDevice(); }
+    if (added && announce) toast('Claude のレビューが届きました', { action: { label: '読む', fn: function () { openAdviceSheet(); } } });
+    return added;
+  }
+
+  // ---- 状態の点（ヘッダー）----
+  function syncState() {
+    if (!syncOn()) return 'off';
+    var s = device.sync;
+    if (s.blocked) return 'bad';
+    var stale = s.lastOkAt ? (Date.now() - Date.parse(s.lastOkAt)) / 86400000 : 99;
+    if (s.dirty || syncBusy) return (s.failCount >= 3 && stale >= 7) ? 'bad' : 'pending';
+    return 'ok';
+  }
+  function agoText(iso) {
+    if (!iso) return 'まだ';
+    var m = Math.floor((Date.now() - Date.parse(iso)) / 60000);
+    if (m < 1) return 'たった今';
+    if (m < 60) return m + '分前';
+    if (m < 1440) return Math.floor(m / 60) + '時間前';
+    return Math.floor(m / 1440) + '日前';
+  }
+  function syncStatusText() {
+    var st = syncState(), s = device.sync;
+    if (st === 'off') return 'クラウドへの控えは未設定です';
+    if (st === 'bad') return 'うまく控えられていません：' + errText(s.blocked ? s.blocked.error : s.lastError);
+    if (st === 'pending') return syncBusy ? '送っています…' : '送信待ち（最後の控え：' + agoText(s.lastOkAt) + '）' + (s.lastError ? '・' + errText(s.lastError) : '');
+    return 'クラウドに控え済み（' + agoText(s.lastOkAt) + '）';
+  }
+  function renderDot() {
+    var el = document.getElementById('syncDot');
+    if (!el) return;
+    var st = syncState();
+    el.hidden = st === 'off';
+    el.setAttribute('data-state', st);
+    el.setAttribute('aria-label', '同期の状態：' + syncStatusText());
+    el.title = syncStatusText();
+  }
+
+  // ---- 止まっている時の帯 ----
+  function syncBanner() {
+    if (!syncOn() || !device.sync.blocked) return null;
+    var b = device.sync.blocked, e = b.error, info = b.info || {};
+    var kids = [h('p', { text: errText(e) + (e === 'other_device' && info.lastPushDeviceName ? '（端末：' + info.lastPushDeviceName + '）' : '') + '。自動の控えを止めています。' })];
+    var acts = [];
+    if (e === 'other_device' || e === 'doc_mismatch' || e === 'shrink') acts.push(btn('クラウドから復元', function () { openCloudRestore(); }, 'btn-sm btn-accent'));
+    if (e === 'other_device') acts.push(btn('この端末の内容で上書き', function () {
+      confirmSheet('この端末の内容で上書きしますか？', ['クラウドの今の内容は、Drive の preforce フォルダに残ります。'], '上書きする', function () { pushNow({ force: 'other_device', manual: true }); }, true);
+    }, 'btn-sm'));
+    if (e === 'shrink') acts.push(btn('内容を確かめて上書き', function () {
+      confirmSheet('記録が減っていますが、上書きしますか？', ['減っている種類：' + (info.collections || []).join('・'), '消したつもりが無ければ、先に［クラウドから復元］を選んでください。クラウドの今の内容は Drive の preforce フォルダに残ります。'], '上書きする', function () { pushNow({ force: 'restore', manual: true }); }, true);
+    }, 'btn-sm'));
+    if (e === 'doc_mismatch' || e === 'auth') acts.push(btn('設定を開く', function () { openSettings(); }, 'btn-sm'));
+    if (e === 'client_old') acts.push(btn('更新を確かめる', function () { location.reload(); }, 'btn-sm'));
+    if (e === 'clock_future' || e === 'store_trashed' || e === 'too_large') acts.push(btn('直したので、もう一度', function () { device.sync.blocked = null; saveDevice(); pushNow({ manual: true }); pingNow(true); }, 'btn-sm'));
+    kids.push(h('div', { class: 'row-actions' }, acts));
+    return h('div', { class: 'banner warn' }, kids);
+  }
+
+  // ---- つなぐ（設定コード）----
+  function askSetupCode(mode) {
+    askText(mode === 'restore' ? 'クラウドから復元（設定コード）' : '設定コードを貼る', '', 'dwz1. で始まる1行', function (v) { if (v) setupSync(v, mode); },
+      { hint: 'GAS から届いたメール「タイムバケット｜設定コード」の1行を、そのまま貼ってください。' });
+  }
+  function setupSync(code, mode) {
+    var p = D.parseSetupCode(code);
+    if (!p) { toast('設定コードを読み取れませんでした（dwz1. で始まる1行です）'); return; }
+    device.sync = { url: p.url, key: p.key, enabled: true, baseRev: null, dirty: false, failCount: 0, lastOkAt: null, lastError: null, blocked: null, lastAdvice: null };
+    saveDevice(); renderAll(); refreshSheets();
+    toast('つないでいます…');
+    lastPingAt = 0;
+    pingNow(true).then(function (res) {
+      if (!res || !res.ok) { toast(errText(res ? res.error : 'offline')); return; }
+      var decision = mode === 'restore' ? (res.serverRev ? 'restore' : 'empty') : D.firstConnect({ serverRev: res.serverRev, docId: res.docId, savedAt: res.docSavedAt || res.savedAt }, doc);
+      if (decision === 'push') {
+        device.sync.baseRev = (!res.serverRev || res.lastPushDevice === device.deviceId) ? res.serverRev : null;
+        device.sync.dirty = true; saveDevice();
+        pushNow({ manual: true }).then(function (r) { if (r && r.ok) toast('クラウドへの控えを始めました'); else if (r) toast(errText(r.error)); });
+      } else if (decision === 'restore') restoreFromCloud('current');
+      else if (decision === 'empty') toast('クラウドにはまだ控えがありません');
+      else if (decision === 'ask-cloud-newer') {
+        openSheet({ title: 'クラウドの方が新しい内容です', build: function (api) {
+          return { body: [h('p', { text: 'クラウドには、この端末より新しい内容があります（最後の控え：' + (res.lastPushDeviceName || '別の端末') + '・' + agoText(res.savedAt) + '）。' })],
+            foot: [btn('この端末で上書き', function () { api.close(); device.sync.baseRev = res.serverRev; pushNow({ force: 'other_device', manual: true }); }),
+              btn('クラウドから復元', function () { api.close(); restoreFromCloud('current'); }, 'btn-accent')] };
+        } });
+      } else {
+        openSheet({ title: '別の人生データがあります', build: function (api) {
+          return { body: [h('p', { text: 'クラウドには、この端末とは別の人生データが入っています。どちらを残しますか？' }),
+            h('p', { class: 'small muted', text: '「この端末で上書き」は、設定の奥で「上書き」と入力した時だけできます（間違えて消さないため）。' })],
+            foot: [btn('あとで決める', api.close), btn('クラウドから復元', function () { api.close(); restoreFromCloud('current'); }, 'btn-accent')] };
+        } });
+        device.sync.blocked = { error: 'doc_mismatch', at: D.nowIso(), info: {} }; saveDevice(); renderAll();
+      }
+    });
+  }
+  // クラウドから復元（最新 current か、世代を選ぶ）
+  function openCloudRestore() {
+    openSheet({ title: 'クラウドから復元', build: function (api) {
+      var body = [h('p', { class: 'small muted', text: '戻す前に、この端末の今のデータも控えに残ります。' }),
+        btn('いちばん新しい控え（最新）から戻す', function () { restoreFromCloud('current'); }, 'btn-accent btn-block')];
+      var listBox = h('div', { class: 'list', style: { 'margin-top': '.6rem' } }, h('p', { class: 'small muted', text: '世代の一覧を読み込んでいます…' }));
+      body.push(h('div', { class: 'sec' }, h('h2', { text: '日付を選んで戻す' })), listBox);
+      callGas('list', { kind: 'gen' }).then(function (res) {
+        listBox.replaceChildren();
+        if (!res.ok) { listBox.appendChild(h('p', { class: 'small', text: errText(res.error) })); return; }
+        if (!res.files.length) { listBox.appendChild(h('p', { class: 'small muted', text: '世代はまだありません。' })); return; }
+        res.files.slice(0, 60).forEach(function (f) {
+          listBox.appendChild(btn(f.savedAt.slice(0, 16).replace('T', ' ') + '（UTC）', function () { restoreFromCloud(f.name); }, 'btn-block'));
+        });
+      });
+      return body;
+    } });
+  }
+  // 戻した後は、開いているシートをすべて閉じて「今年」に戻る（importReplace の第2引数）
+  function restoreFromCloud(name) {
+    toast('読み込んでいます…');
+    callGas('get', { name: name }).then(function (res) {
+      if (!res.ok || !res.doc) { toast(errText(res.error)); return; }
+      importReplace(JSON.stringify(res.doc), true, { onApplied: function () {
+        var s = device.sync;
+        s.baseRev = res.serverRev; s.blocked = null; s.failCount = 0; s.lastError = null;
+        if (name === 'current') s.lastOkAt = D.nowIso();   // クラウドの最新と同じになった
+        // 世代から戻した時は「新しい編集」として、次の控えで上書きを許す（記録が減っていても止めない）
+        s.forceNext = name === 'current' ? null : 'restore';
+        s.dirty = true;
+        saveDevice();
+        if (s.dirty) schedulePush(1500);
+        renderAll();
+      } });
+    });
+  }
+  function stopSync() {
+    confirmSheet('この端末での同期を止めますか？', ['クラウドの控えは消えません。設定コードを貼り直せば、また始められます。'], '止める', function () {
+      device.sync = null; saveDevice(); renderAll(); refreshSheets(); toast('この端末での同期を止めました');
+    }, true);
+  }
+  function forceOverwrite() {
+    askText('クラウドをこの端末の内容で上書き', '', '「上書き」と入力', function (v) {
+      if (v !== '上書き') { toast('やめました（「上書き」と入力した時だけ上書きします）'); return; }
+      pushNow({ force: 'all', manual: true }).then(function (r) { if (r) toast(r.ok ? '上書きしました（前の内容は Drive の preforce に残っています）' : errText(r.error)); });
+    }, { hint: 'クラウドの今の内容は Drive の preforce フォルダに残り、メールでも知らせます。' });
+  }
+
+  // ---- Claude のレビュー ----
+  function requestReview() {
+    if (!syncOn()) { toast('先に、同期（設定コード）を設定してください'); return; }
+    if (syncBusy) { toast('送信中です。少し後でもう一度押してください'); return; }
+    if (device.sync.blocked) { toast(errText(device.sync.blocked.error) + '。先に同期を直してください'); return; }
+    toast('Claude が読んでいます（1〜2分かかります）');
+    device.sync.dirty = true;
+    pushNow({ manual: true }).then(function (pr) {
+      if (!pr || !pr.ok) { toast('最新の内容を送れなかったので、レビューをやめました' + (pr ? '（' + errText(pr.error) + '）' : '')); return null; }
+      return callGas('review', { meta: syncMeta() }, { timeoutMs: 330000 });
+    }).then(function (res) {
+      if (!res) return;
+      if (res.ok && res.advice) { takeAdvice(res.advice, res.name, false); openAdviceSheet(res.advice.id); return; }
+      if (res.error === 'unchanged') { toast(errText('unchanged') + '。前回のレビューを開きます'); openAdviceSheet(); return; }
+      toast(errText(res.error));
+      pingNow(true);
+    });
+  }
+  function adviceDate(a) { return String(a.at || '').slice(0, 10); }
+  function openAdviceSheet(id) {
+    openSheet({ title: 'Claude のレビュー', build: function () {
+      var a = (id && D.byId(doc.advice, id)) || D.latestAdvice(doc);
+      if (!a) return [h('p', { class: 'small muted', text: 'まだレビューはありません。設定の［Claude にレビューしてもらう］か、週1の自動レビューを待ってください。' })];
+      var body = [h('p', { class: 'xs muted', text: adviceDate(a) + '・' + (a.source === 'claude-code' ? 'PC の Claude Code' : 'Claude（自動）') + (a.costUsd != null ? '・料金の目安 約$' + a.costUsd : '') })];
+      body.push(h('div', { class: 'card flat' }, h('p', { style: { 'white-space': 'pre-wrap', margin: 0 }, text: a.overall })));
+      if ((a.praise || []).length) { body.push(sec('良いところ')); body.push(h('ul', {}, a.praise.map(function (p) { return h('li', { text: p }); }))); }
+      if ((a.items || []).length) {
+        body.push(sec('項目へのひとこと'));
+        a.items.forEach(function (x) {
+          var it = getItem(x.itemId);
+          body.push(h('div', { class: 'finding info' }, [
+            h('div', { class: 'ititle', text: it ? it.title : '（今は無い項目）' }),
+            h('div', { text: x.comment }),
+            x.suggestion ? h('div', { class: 'small', text: '提案：' + x.suggestion }) : null,
+            x.rule ? h('div', { class: 'rule', text: ruleLabel(x.rule) + (ruleTitles(x.rule) ? '（' + ruleTitles(x.rule) + '）' : '') }) : null,
+            it ? h('div', { class: 'row-actions' }, [btn('項目を開く', function () { openItemSheet(it.id); }, 'btn-sm'),
+              it.status !== 'letgo' ? btn('時期を変える', function () { openPlaceSheet(it.id); }, 'btn-sm') : null]) : null
+          ]));
+        });
+      }
+      if ((a.questions || []).length) { body.push(sec('問いかけ')); body.push(h('ul', {}, a.questions.map(function (q) { return h('li', { text: q }); }))); }
+      body.push(h('p', { class: 'xs muted', text: '提案は自動では反映されません。決めるのはあなたです。' }));
+      var older = D.live(doc.advice).filter(function (x) { return x.id !== a.id; }).sort(function (p, q) { return p.at < q.at ? 1 : -1; });
+      if (older.length) {
+        body.push(h('details', { class: 'more', 'data-key': 'history' }, [h('summary', {}, '前のレビュー'),
+          h('div', { class: 'list' }, older.slice(0, 30).map(function (o) { return btn(adviceDate(o) + '　' + o.overall.slice(0, 24) + '…', function () { openAdviceSheet(o.id); }, 'btn-block'); }))]));
+      }
+      return body;
+    } });
+  }
+  function adviceCard() {
+    var a = D.latestAdvice(doc);
+    if (!a || device.hiddenAdviceId === a.id) return null;
+    return h('div', { class: 'card flat advice-card' }, [
+      h('div', { class: 'xs muted', text: 'Claude のひとこと（' + adviceDate(a) + '）' }),
+      h('p', { style: { margin: '.3rem 0' }, text: a.overall.length > 110 ? a.overall.slice(0, 110) + '…' : a.overall }),
+      h('div', { class: 'row-actions' }, [btn('読む', function () { openAdviceSheet(a.id); }, 'btn-sm btn-accent'),
+        btn('閉じる', function () { device.hiddenAdviceId = a.id; saveDevice(); renderAll(); }, 'btn-sm')])
+    ]);
+  }
+
+  // ---- 設定の「同期」と「Claude のレビュー」の節 ----
+  function syncSettingsSection(api) {
+    var out = [h('h3', { text: '同期（自分の Google への控え）', style: { 'margin-top': '1.5rem' } })];
+    var s = device.sync;
+    out.push(h('p', { class: 'small', text: syncStatusText() }));
+    if (!syncOn()) {
+      out.push(h('p', { class: 'xs muted', text: '自分の Google（GAS）に、変更のたびに自動で控えを取ります。Drive に日付付きの世代が残り、PC で見られるスプレッドシートもできます。' }));
+      out.push(btn('設定コードを貼る', function () { askSetupCode('connect'); }, 'btn-accent btn-block'));
+    } else {
+      var sv = s.server || {};
+      out.push(h('div', { class: 'list' }, [
+        btn('今すぐ控える', function () { device.sync.dirty = true; pushNow({ manual: true }).then(function (r) { if (r) toast(r.ok ? 'クラウドに控えました' : errText(r.error)); }); }, 'btn-block'),
+        btn('クラウドから復元', function () { openCloudRestore(); }, 'btn-block'),
+        sv.sheetUrl ? h('a', { class: 'btn btn-block', href: sv.sheetUrl, target: '_blank', rel: 'noopener noreferrer', text: '読む用のスプレッドシートを開く' }) : null,
+        sv.folderUrl ? h('a', { class: 'btn btn-block', href: sv.folderUrl, target: '_blank', rel: 'noopener noreferrer', text: 'Drive の控えのフォルダを開く' }) : null
+      ]));
+      out.push(h('details', { class: 'more', 'data-key': 'sync-more' }, [h('summary', {}, 'くわしい操作'), h('div', { class: 'list' }, [
+        h('p', { class: 'xs muted', text: '端末の名前：' + deviceLabel() + '・キー：••••' + String(s.key).slice(-4) + '・版 ' + (s.baseRev == null ? '―' : s.baseRev) }),
+        btn('端末の名前を変える', function () { askText('端末の名前', device.deviceName || deviceLabel(), '例：Pixel', function (v) { if (v) { device.deviceName = v.slice(0, 20); saveDevice(); api.refresh(); } }); }, 'btn-block btn-sm'),
+        btn('設定コードを貼り直す', function () { askSetupCode('connect'); }, 'btn-block btn-sm'),
+        btn('クラウドをこの端末の内容で上書き', forceOverwrite, 'btn-block btn-sm btn-danger'),
+        btn('この端末での同期を止める', stopSync, 'btn-block btn-sm btn-danger')
+      ])]));
+    }
+    out.push(h('h3', { text: 'Claude のレビュー', style: { 'margin-top': '1.5rem' } }));
+    out.push(h('p', { class: 'xs muted', text: '一覧を Claude が読んで、本の考え方から見た感想とアドバイスを返します。材料に名前・生年月日・メモは入れません。変化が無い週は呼びません（料金がかかりません）。' }));
+    out.push(field('自動のレビュー', seg([{ label: '週1', value: 'weekly' }, { label: '月1', value: 'monthly' }, { label: '止める', value: 'off' }], doc.settings.reviewFrequency, function (v) {
+      commit(null, function (d) { d.settings.reviewFrequency = v; upd(d.settings); });
+    }, '自動のレビュー')));
+    out.push(checkLine('金額も Claude に見せる', doc.settings.reviewIncludeMoney, function (v) { commit(null, function (d) { d.settings.reviewIncludeMoney = v; upd(d.settings); }); }));
+    var rv = syncOn() && s.server && s.server.review;
+    if (rv) out.push(h('p', { class: 'xs muted', text: (rv.hasKey ? 'API キー：設定済み' : 'API キー：未設定（セットアップ手順.html の v1.1 の節）') + '・前回：' + (rv.lastAt ? rv.lastAt.slice(0, 10) : 'まだ') + (rv.lastError ? '・' + errText(String(rv.lastError).split('：')[0]) : '') }));
+    out.push(h('div', { class: 'list' }, [
+      btn('Claude にレビューしてもらう（今すぐ）', requestReview, 'btn-block'),
+      D.live(doc.advice).length ? btn('レビューを読む', function () { openAdviceSheet(); }, 'btn-block') : null
+    ]));
+    return out;
   }
 
   /* =====================================================================
@@ -1612,14 +2008,26 @@
 
     document.querySelector('.tabbar').addEventListener('click', function (e) { var b = e.target.closest('[data-tab]'); if (b) setTab(b.getAttribute('data-tab')); });
     document.getElementById('settingsBtn').addEventListener('click', openSettings);
+    document.getElementById('syncDot').addEventListener('click', openSettings);
+    window.addEventListener('online', function () { pingNow(true); });
+    renderDot();
+    if (syncOn()) setTimeout(function () { pingNow(true); }, 1500);
     document.getElementById('fab').addEventListener('click', function () { openIdeaSheet(); });
     window.addEventListener('hashchange', function () { var t = tabFromHash(); if (t && t !== ui.tab) setTab(t); });
     // 閉じる・裏に回る瞬間に、保留中の保存を取りこぼさない
     window.addEventListener('pagehide', function () { store.flush(); });
-    document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') store.flush(); else checkDayChange(); });
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'hidden') { store.flush(); if (syncOn() && device.sync.dirty) pushNow({ keepalive: true }); }
+      else { checkDayChange(); pingNow(); }
+    });
     setInterval(checkDayChange, 60000);
     // 同じスマホの別の画面（アプリ／Chromeのタブ）が保存したら、読み直して合わせる
     window.addEventListener('storage', function (e) {
+      // 別の画面で同期を設定・解除したら、こちらも合わせる（古い画面が同期の設定を消してしまわないように）
+      if (e.key === D.KEYS.device && e.newValue) {
+        try { device.sync = JSON.parse(e.newValue).sync || null; renderDot(); } catch (err) {}
+        return;
+      }
       if (e.key !== D.KEYS.data || !e.newValue) return;
       if (store.pending()) return;      // こちらに未保存の変更がある時は、次の保存で合体する
       var r2 = D.ingest(e.newValue);

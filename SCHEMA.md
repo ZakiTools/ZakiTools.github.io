@@ -52,6 +52,30 @@
 
 `{name, relation, birthYear, birthDate, goOutUntilAge, meetPerYear, onCalendar, note}`
 
+## advice（Claude のレビュー。追記だけ）
+
+`{id, at, source:'api'|'claude-code', model, packetHash, overall, praise[], items:[{itemId, comment, suggestion, rule}], questions[], usage, costUsd}`
+
+- `id` が同じものは二度入れない（`addAdvice`）。提案がデータに自動で反映されることはない
+- レビューの材料（`reviewPacket`）には、名前・生年月日・メモ・写真のリンク・思い出の一言を入れない。金額は `settings.reviewIncludeMoney` が true の時だけ
+- `settings.reviewFrequency`：`weekly`（既定）／`monthly`／`off`
+
+## 自分の Google ドライブの控え（v1.1。GAS が書く）
+
+フォルダ「タイムバケット（消さないで）」
+
+| 場所 | 中身 |
+|---|---|
+| `current.json` | 最新。書き出しと同じ形＋ `_server:{rev, savedAt, device}`（取り込む時に `_server` は捨てる） |
+| `generations/<年>/<時刻>_r<版>_<端末>.json` | 世代。最新20個／14日以内すべて／90日までは1日1個／それより古いものは月1個を永久に |
+| `advice/*.json` | Claude のレビュー（上の advice の1件） |
+| `preforce/`・`premigrate/`・`preupdate/` | 上書き・形の変更・アプリの版の変更の直前のコピー（消さない） |
+| `tables.json`・`packet.json` | 読む用の表の材料・レビューの材料（アプリが作る） |
+| スプレッドシート「タイムバケット 読む用」 | PC で見る用（一方通行。直してもアプリには戻らない） |
+
+送る時の関所（上から順）：`client_old`（古いアプリ）→ `store_trashed`（フォルダがゴミ箱）→ `doc_mismatch`（別の人生データ）→ `other_device`（別の端末が後から保存）→ `shrink`（どれかの種類で記録の数が減った。墓標も数える）→ `clock_future`（端末の時計が1日以上進んでいる）。
+関所を越える上書き（force）は `other_device`／`restore`／`all` の3段階で、越える前に `preforce/` へコピーを残す。`all` は設定の奥で「上書き」と入力した時だけ。
+
 ## 形を変える時の規則
 
 1. 知らない項目・知らない最上位の配列は、読み込みでも保存でも**捨てない**（古い版のアプリが新しい項目を消さないため）
@@ -69,4 +93,4 @@
 | `dwz-prev` | 取り込み・復元・移行の直前の控え | 含めない |
 | `dwz-daily`・`dwz-daily-day` | 1日1回の控え | 含めない |
 | `dwz-data-corrupt-<日時>` | 読めなかったデータの退避（最大2件） | 含めない |
-| `dwz-device` | この端末だけの情報（テーマ・前回の書き出し・将来の同期キー） | **含めない** |
+| `dwz-device` | この端末だけの情報（テーマ・前回の書き出し・同期の設定 `sync:{url, key, baseRev, dirty, lastOkAt, blocked, …}`） | **含めない**（秘密キーはここだけ） |
